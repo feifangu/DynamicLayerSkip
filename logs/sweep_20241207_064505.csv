@@ -1,0 +1,3 @@
+strategy,entropy_threshold,num_speculations,acceptance_rate,total_time,time_per_token,tokens_per_second,avg_exit_layer
+dynamic_early_exit,4.0,1,0.9957122445106507,24.54915714263916,0.04794757254421711,20.864193725585938,0.0
+dynamic_early_exit,4.0,2,0.9892882704734802,23.604912948608398,0.04610334560275078,21.71102657318115,0.0
