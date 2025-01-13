@@ -1,3 +1,10 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
 from typing import List, Optional, Tuple
 
 import colorama
@@ -13,18 +20,15 @@ from self_speculation.speculative_streamer import SpeculativeTextStreamer
 from self_speculation.llama_model_utils import (
     crop_past_key_values,
     decode_next_token,
-    forward_early,
+    optimized_forward_early,
     forward_remainder,
-    determine_shared_exit_layer
 )
-
-import random
 
 def max_fn(x, eps=1e-6):
     x_max = torch.where(x > 0, x, 0)
     return x_max / (torch.sum(x_max) + eps)
 
-class DynamicEarlyExitGenerationStrategy(GenerationStrategy):
+class  DynamicEarlyExitGenerationStrategy(GenerationStrategy):
     def generate_token_ids(
         self,
         model: transformers.LlamaForCausalLM,
@@ -63,7 +67,8 @@ class DynamicEarlyExitGenerationStrategy(GenerationStrategy):
                     generation_config.max_steps - len(output_ids) - 1,
                 ),
                 past_key_values=past_key_values,
-                confidence_threshold=generation_config.confidence_threshold,
+                KL_divergence_threshold=generation_config.KL_divergence_threshold,
+                min_layer=generation_config.min_layer,
                 eos_token_id=eos_token_id,
                 calls=calls,
                 sample=generation_config.sample,
@@ -93,7 +98,7 @@ class DynamicEarlyExitGenerationStrategy(GenerationStrategy):
         return GenerationStrategyResult(
             predicted_tokens=output_ids,
             acceptance_rate=total_draft_matches / total_generations,
-            exit_layers = exit_layers
+            exit_layers=exit_layers 
         )
 
     # TODO: remove calls, input_ids_list, rely on generation config
@@ -107,7 +112,8 @@ class DynamicEarlyExitGenerationStrategy(GenerationStrategy):
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]],
         eos_token_id: int,
         calls: int,
-        confidence_threshold: float,
+        KL_divergence_threshold: float,
+        min_layer: int,
         sample: Optional[bool] = False,
         temperature: Optional[float] = 0.7,
         top_k: Optional[int] = 50,
@@ -122,17 +128,19 @@ class DynamicEarlyExitGenerationStrategy(GenerationStrategy):
         if sample:
             draft_probabilities: List[torch.Tensor] = []
         exit_query_cache = None
-        exit_layer = determine_shared_exit_layer(model, input_ids, confidence_threshold, num_speculations)
+        max_exit_layer = 1
         for _ in range(num_speculations):
-            draft_result = forward_early(
+            draft_result = optimized_forward_early(
                 model,
                 draft_input_ids,
                 past_key_values,
-                exit_layer,
+                KL_divergence_threshold,
                 exit_query_cache,
+                min_layer,
             )
-            past_key_values = draft_result.past_key_values
+            past_key_values = draft_result.past_key_values # TODO: change to a dict
             exit_query_cache = draft_result.exit_query_cache
+            max_exit_layer = max(max_exit_layer, draft_result.exit_layer)
             draft_logits = draft_result.logits
             if logits_processors:
                 draft_logits = logits_processors(draft_input_ids, draft_logits)
@@ -164,7 +172,7 @@ class DynamicEarlyExitGenerationStrategy(GenerationStrategy):
             model,
             prefill_token_ids.int(),
             past_key_values,
-            exit_layer,
+            max_exit_layer,
             exit_query_cache,
         )
         logits = verify_results.logits
@@ -225,5 +233,5 @@ class DynamicEarlyExitGenerationStrategy(GenerationStrategy):
             past_key_values,
             number_of_matches,
             draft_output_ids.numel(),
-            exit_layer
+            max_exit_layer
         )

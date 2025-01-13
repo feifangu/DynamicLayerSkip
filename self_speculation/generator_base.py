@@ -35,9 +35,9 @@ class GenerationResult:
 class GenerationConfig:
     max_steps: int = 512
     exit_layer: int = -1
-    confidence_threshold: float = 0.0
+    KL_divergence_threshold: float = 0.0
+    min_layer: int = -1
     num_speculations: int = -1
-    entropy_threshold: float = 0.5
     generation_strategy: str = "autoregressive"
     sample: bool = True
     temperature: float = 0.6

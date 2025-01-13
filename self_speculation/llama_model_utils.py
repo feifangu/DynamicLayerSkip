@@ -6,16 +6,32 @@
 #
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 import torch
 import transformers
+
+@dataclass
+class GenerationState:
+    hidden_states: torch.Tensor
+    logits: torch.Tensor
+    past_key_values: transformers.cache_utils.DynamicCache
+    exit_layer: int
+    token: int
+    confidence: float
 
 @dataclass
 class ForwardResult:
     logits: torch.Tensor
     past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]]
     exit_query_cache: Optional[List[torch.Tensor]] = None
+
+@dataclass
+class OptimizedForwardResult:
+    logits: torch.Tensor
+    past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]]
+    exit_query_cache: Optional[List[torch.Tensor]] = None
+    exit_layer: Optional[int] = None
 
 # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
 def _prepare_decoder_attention_mask(model, attention_mask, input_shape, inputs_embeds, past_key_values_length):
@@ -390,229 +406,209 @@ def forward_remainder(
         logits=logits, past_key_values=past_key_values, exit_query_cache=exit_query_cache
     )
 
-def determine_exit_layer(
-        model: transformers.LlamaForCausalLM,
-        input_ids: torch.Tensor,
-        confidence_threshold: float,
-        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
-) -> int:
-    """Determine exit layer for a batch of tokens based on KL divergence."""
-    draft_input_ids = input_ids.clone()
-    device = draft_input_ids.device
-    draft_batch_size, draft_seq_length = draft_input_ids.shape
 
-    draft_seq_length_with_past = draft_seq_length
-    draft_past_key_values_length = 0
-
-    if past_key_values is not None:
-        draft_past_key_values_length = past_key_values[0][0].shape[2]
-        draft_seq_length_with_past = draft_seq_length_with_past + draft_past_key_values_length
-
-    # Set up position_ids
-    draft_position_ids = torch.arange(
-        draft_past_key_values_length,
-        draft_seq_length + draft_past_key_values_length,
-        dtype=torch.long,
-        device=device,
-    ).unsqueeze(0).view(-1, draft_seq_length)
-
-    # Set up attention mask
-    draft_attention_mask = draft_input_ids.new_ones((draft_batch_size, draft_seq_length_with_past))
-    draft_inputs_embeds = model.model.embed_tokens(draft_input_ids)
-    draft_attention_mask = _prepare_decoder_attention_mask(
-        model,
-        draft_attention_mask,
-        (draft_batch_size, draft_seq_length),
-        draft_inputs_embeds,
-        draft_past_key_values_length,
-    )
-
-    draft_hidden_states = draft_inputs_embeds
-    draft_last_logits = None
-    exit_layer = len(model.model.layers)-1  # Default to using all layers
-
-    for idx, decoder_layer in enumerate(model.model.layers):
-        draft_hidden_states = decoder_layer(
-            draft_hidden_states,
-            attention_mask=draft_attention_mask,
-            position_ids=draft_position_ids,
-            past_key_value=None,  # Don't need cache for probing
-            output_attentions=False,
-            use_cache=False,
-            padding_mask=None,
-        )[0]
-
-        if idx >= 7:
-            draft_current_hidden = model.model.norm(draft_hidden_states)
-            draft_current_logits = model.lm_head(draft_current_hidden)
-
-            if draft_last_logits is not None:
-                current_probs = torch.softmax(draft_current_logits[:, -1], dim=-1)
-                last_probs = torch.softmax(draft_last_logits[:, -1], dim=-1)
-
-                # Only consider top K tokens for stability measurement
-                k = 10  # We can adjust this
-                current_top = torch.topk(current_probs, k)
-                last_top = torch.topk(last_probs, k)
-
-                # Calculate difference only on top tokens
-                top_indices = torch.unique(torch.cat([current_top.indices, last_top.indices]))
-                prob_diff = torch.abs(current_probs[..., top_indices] - last_probs[..., top_indices]).mean()
-
-                confidence = torch.max(current_probs, dim=-1)[0]
-
-                #print(f"\nLayer {idx + 1}:")
-                #print(f"Prob diff (top tokens) = {prob_diff:.6f}, Confidence = {confidence.mean():.4f}")
-
-                # Adjust threshold since we're looking at fewer tokens
-                if prob_diff < 0.01 and confidence.mean() > confidence_threshold:
-                    #print(f"Exit criteria met at layer {idx + 1}")
-                    return idx + 1
-
-            draft_last_logits = draft_current_logits.detach().clone()
-    return exit_layer
-
-
-def determine_shared_exit_layer(
-        model: transformers.LlamaForCausalLM,
-        input_ids: torch.Tensor,
-        confidence_threshold: float,
-        num_speculations: int
-) -> int:
-    """Determine a shared exit layer for a batch of tokens."""
-    # First generate all tokens
-    with torch.no_grad():
-        draft_input_ids = input_ids.clone()
-        all_tokens = [draft_input_ids]
-
-        for _ in range(num_speculations - 1):
-            logits = model(draft_input_ids, use_cache=False).logits
-            next_token = torch.argmax(logits[:, -1], dim=-1)
-            draft_input_ids = torch.cat([draft_input_ids, next_token.unsqueeze(0)], dim=-1)
-            all_tokens.append(next_token.unsqueeze(0))
-
-        # Concatenate all tokens
-        full_sequence = torch.cat(all_tokens, dim=-1)
-
-        # Determine exit layer for full sequence
-        exit_layer = determine_exit_layer(model, full_sequence, confidence_threshold)
-        if exit_layer is not None and 1 <= exit_layer < len(model.model.layers):
-            return exit_layer
-        return len(model.model.layers)-1
-    
-def determine_entropy_shared_exit_layer(
-        model: transformers.LlamaForCausalLM,
-        input_ids: torch.Tensor,
-        entropy_threshold: float,
-        num_speculations: int
-) -> int:
-    """Determine a shared exit layer for a batch of tokens."""
-    # First generate all tokens
-    with torch.no_grad():
-        draft_input_ids = input_ids.clone()
-        all_tokens = [draft_input_ids]
-
-        for _ in range(num_speculations - 1):
-            logits = model(draft_input_ids, use_cache=False).logits
-            next_token = torch.argmax(logits[:, -1], dim=-1)
-            draft_input_ids = torch.cat([draft_input_ids, next_token.unsqueeze(0)], dim=-1)
-            all_tokens.append(next_token.unsqueeze(0))
-
-        # Concatenate all tokens
-        full_sequence = torch.cat(all_tokens, dim=-1)
-
-        # Determine exit layer for full sequence
-        exit_layer = determine_entropy_exit_layer(model, full_sequence, entropy_threshold, num_speculations)
-        #(f"Exit layer: {exit_layer}")
-        if exit_layer is not None and 1 <= exit_layer < len(model.model.layers):
-            return exit_layer
-        
-        #print(f"Exit layer not found, using all layers: {len(model.model.layers)-1}")
-        return len(model.model.layers)-1
-
-def determine_entropy_exit_layer(
+def optimized_forward_early(
     model: transformers.LlamaForCausalLM,
     input_ids: torch.Tensor,
-    entropy_threshold: float,
-    num_speculations: int,
-    past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
-) -> int:
-    """
-    Determines the shared exit layer for a batch of tokens based on entropy thresholds.
+    past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]],
+    KL_divergence_threshold: float,
+    exit_query_cache: Optional[List[torch.Tensor]],
+    min_layer: int,
+) -> ForwardResult:
+    device = input_ids.device
+    batch_size, seq_length = input_ids.shape
 
-    Args:
-        model (transformers.LlamaForCausalLM): The model used for token generation.
-        input_ids (torch.Tensor): Input token IDs of shape [batch_size, seq_length].
-        entropy_threshold (float): The entropy threshold for determining early exit.
-        num_speculations (int): Number of speculative tokens to generate.
-        past_key_values (Optional[List[Tuple[torch.Tensor, torch.Tensor]]]): Past key values for efficient computation.
-
-    Returns:
-        int: The shared exit layer index, or the last layer if no early exit is determined.
-    """
-    draft_input_ids = input_ids.clone()
-    device = draft_input_ids.device
-    draft_batch_size, draft_seq_length = draft_input_ids.shape
-
-    draft_seq_length_with_past = draft_seq_length
-    draft_past_key_values_length = 0
+    seq_length_with_past = seq_length
+    past_key_values_length = 0
 
     if past_key_values is not None:
-        draft_past_key_values_length = past_key_values[0][0].shape[2]
-        draft_seq_length_with_past = draft_seq_length_with_past + draft_past_key_values_length
+        past_key_values_length = past_key_values[0][0].shape[2]
+        seq_length_with_past = seq_length_with_past + past_key_values_length
+    past_key_values = transformers.cache_utils.DynamicCache.from_legacy_cache(past_key_values)
 
-    # Set up position_ids
-    draft_position_ids = torch.arange(
-        draft_past_key_values_length,
-        draft_seq_length + draft_past_key_values_length,
+    position_ids = torch.arange(
+        past_key_values_length,
+        seq_length + past_key_values_length,
         dtype=torch.long,
         device=device,
-    ).unsqueeze(0).view(-1, draft_seq_length)
-
-    # Set up attention mask
-    draft_attention_mask = draft_input_ids.new_ones((draft_batch_size, draft_seq_length_with_past))
-    draft_inputs_embeds = model.model.embed_tokens(draft_input_ids)
-    draft_attention_mask = _prepare_decoder_attention_mask(
+    )
+    position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+    attention_mask = input_ids.new_ones(
+        (batch_size, seq_length_with_past),
+        dtype=torch.bool,
+    )
+    inputs_embeds = model.model.embed_tokens(input_ids)
+    attention_mask = _prepare_decoder_attention_mask(
         model,
-        draft_attention_mask,
-        (draft_batch_size, draft_seq_length),
-        draft_inputs_embeds,
+        attention_mask,
+        (batch_size, seq_length),
+        inputs_embeds,
+        past_key_values_length,
+    )
+
+    hidden_states = inputs_embeds
+    prev_logits = None
+    exit_layer = len(model.model.layers)-1  # Default to last layer
+    
+    for idx, decoder_layer in enumerate(model.model.layers[:-1]):
+        hidden_states, past_key_values = decoder_layer(
+            hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_values,
+            output_attentions=False,
+            use_cache=True,
+            padding_mask=None,
+        )
+
+        if idx >= min_layer and idx % 3 == 0:
+            current_hidden = model.model.norm(hidden_states)
+            current_logits = model.lm_head(current_hidden)
+
+            probs = torch.softmax(current_logits[:, -1], dim=-1)
+            entropy = -(probs * torch.log(probs)).sum()
+
+            # Adjust threshold since we're looking at fewer tokens
+            #print(f"KL_divergence_threshold = {KL_divergence_threshold}")
+            if entropy <= KL_divergence_threshold:
+                #print(f"Condition met: {confidence} >= {KL_divergence_threshold}")
+                exit_layer = idx + 1
+                break
+  
+
+    past_key_values = past_key_values.to_legacy_cache()
+
+    if exit_query_cache is None:
+        exit_query_cache = hidden_states
+    else:
+        exit_query_cache = torch.cat([exit_query_cache, hidden_states], dim=1)
+
+    hidden_states = model.model.norm(hidden_states)
+    logits = model.lm_head(hidden_states)
+
+    #print(f"Exit at layer: {exit_layer}")
+    
+    return OptimizedForwardResult(
+        logits=logits, 
+        past_key_values=past_key_values, 
+        exit_query_cache=exit_query_cache,
+        exit_layer=exit_layer
+    )
+
+
+def optimized_forward_remainder(
+    model: transformers.LlamaForCausalLM,
+    input_ids: torch.Tensor,
+    past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]],
+    exit_query_cache: Optional[List[torch.Tensor]],
+) -> ForwardResult:
+    device = input_ids.device
+    batch_size, seq_length = input_ids.shape
+    num_tokens_to_generate: int = 1
+    seq_length_with_past = seq_length
+    draft_past_key_values_length: int = 0
+    full_past_key_values_length: int = 0
+
+    if past_key_values is not None and past_key_values[0] is not None:
+        # it's okay to use the first layer because the draft model necessarily computes it
+        draft_past_key_values_length = past_key_values[0][0].shape[2]
+        # the total sequence length is the past key values since that includes the draft tokens
+
+        # Find the maximum layer index that has been computed
+        max_layer_idx = 0
+        for i in range(len(model.model.layers)-1, -1, -1):
+            if i < len(past_key_values) and past_key_values[i] is not None:
+                max_layer_idx = i
+                break
+                
+        # Get the length of tokens that have gone through full verification
+        if max_layer_idx == len(model.model.layers) - 1:
+            full_past_key_values_length = past_key_values[max_layer_idx][0].shape[2]
+        else:
+            full_past_key_values_length = 0
+
+        seq_length_with_past = num_tokens_to_generate + draft_past_key_values_length
+    past_key_values = transformers.cache_utils.DynamicCache.from_legacy_cache(past_key_values)
+
+    inputs_embeds = model.model.embed_tokens(input_ids)
+
+    position_ids = torch.arange(
+        full_past_key_values_length,
+        seq_length_with_past,
+        dtype=torch.long,
+        device=device,
+    )
+    position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+    attention_mask = input_ids.new_ones(
+        (batch_size, seq_length_with_past),
+        dtype=torch.bool,
+    )
+    early_attention_mask = _prepare_decoder_attention_mask(
+        model,
+        attention_mask,
+        (batch_size, num_tokens_to_generate),
+        inputs_embeds,
         draft_past_key_values_length,
     )
 
-    draft_hidden_states = draft_inputs_embeds
-    draft_last_logits = None
-    exit_layer = len(model.model.layers)-1  # Default to using all layers
+    full_attention_mask = _prepare_decoder_attention_mask(
+        model,
+        attention_mask,
+        (batch_size, seq_length),
+        inputs_embeds,
+        full_past_key_values_length,
+    )
 
+    hidden_states = inputs_embeds
+    full_hidden_states: Optional[torch.FloatTensor] = None
+    
+    # Process remaining layers for each token based on where it exited
     for idx, decoder_layer in enumerate(model.model.layers):
-        draft_hidden_states = decoder_layer(
-            draft_hidden_states,
-            attention_mask=draft_attention_mask,
-            position_ids=draft_position_ids,
-            past_key_value=None,  # Don't need cache for probing
-            output_attentions=False,
-            use_cache=False,
-            padding_mask=None,
-        )[0]
+        past_key_value = (
+            past_key_values[idx]
+            if (past_key_values is not None and idx < len(past_key_values))
+            else None
+        )
+        
+        # For layers that some tokens haven't computed yet
+        if idx > max_layer_idx:
+            if full_hidden_states is None and exit_query_cache is not None:
+                full_hidden_states = torch.cat(
+                    [exit_query_cache, hidden_states[:, -num_tokens_to_generate:]],
+                    dim=1,
+                )
+            else:
+                full_hidden_states = hidden_states
+                
+            hidden_states, past_key_values = decoder_layer(
+                full_hidden_states,
+                attention_mask=full_attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                output_attentions=False,
+                use_cache=True,
+                padding_mask=None,
+            )
+        else:
+            # For layers already computed, just pass through the new token
+            early_hidden_states = hidden_states[:, -num_tokens_to_generate:]
+            early_position_ids = position_ids[:, -num_tokens_to_generate:]
+            hidden_states, past_key_values = decoder_layer(
+                early_hidden_states,
+                attention_mask=early_attention_mask,
+                position_ids=early_position_ids,
+                past_key_value=past_key_values,
+                output_attentions=False,
+                use_cache=True,
+                padding_mask=None,
+            )
 
-        if idx >= 7:
-            draft_current_hidden = model.model.norm(draft_hidden_states)
-            draft_current_logits = model.lm_head(draft_current_hidden)
+    past_key_values = past_key_values.to_legacy_cache()
+    hidden_states = model.model.norm(hidden_states)
+    logits = model.lm_head(hidden_states)
 
-            if draft_last_logits is not None:
-                current_probs = torch.softmax(draft_current_logits[:, -1], dim=-1)
-                current_probs = current_probs.to(torch.float32)  # Switch to float32 for stability
-                current_probs = current_probs + 1e-6            # Add small epsilon to avoid zeros
-                current_probs = current_probs / current_probs.sum(dim=-1, keepdim=True)  # Normalize probabilities
-                entropy = -torch.sum(current_probs * torch.log(current_probs), dim=-1).mean().item()                
-                #print(f"\nLayer {idx + 1}:")
-                #print(f"\ncurrent_probs {current_probs}:")
-                #print(f"entropy (top tokens) = {entropy:.6f}")
-
-                # Adjust threshold since we're looking at fewer tokens
-                if entropy < entropy_threshold:
-                    #print(f"Exit criteria met at layer {idx + 1}")
-                    return idx + 1
-
-            draft_last_logits = draft_current_logits.detach().clone()
-    return exit_layer
+    return ForwardResult(
+        logits=logits,
+        past_key_values=past_key_values,
+        exit_query_cache=exit_query_cache
+    )
