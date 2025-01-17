@@ -29,7 +29,7 @@ from self_speculation.generator_base import (
 from self_speculation.self_speculation_generator import SelfSpeculativeGenerationStrategy
 from self_speculation.speculative_streamer import SpeculativeTextStreamer
 from self_speculation.dynamic_early_exit_generator import DynamicEarlyExitGenerationStrategy
-from self_speculation.entropy_based_generator import EntropyExitGenerationStrategy
+
 class StreamerType(str, Enum):
     NONE="none"
     STANDARD="standard"
@@ -90,8 +90,6 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
         generation_strategy: GenerationStrategy = SelfSpeculativeGenerationStrategy()
     elif generation_config.generation_strategy == "dynamic_early_exit":
         generation_strategy: GenerationStrategy = DynamicEarlyExitGenerationStrategy()
-    elif generation_config.generation_strategy == "entropy_exit":  # Add this
-        generation_strateg: GenerationStrategy = EntropyExitGenerationStrategy()
     else:
         raise Exception(
             f"Unsupported generation strategy: {generation_config.generation_strategy}"

@@ -1,14 +1,15 @@
 # LayerSkip
-<a href='https://huggingface.co/collections/facebook/layerskip-666b25c50c8ae90e1965727a'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-blue'></a> [![License: CC BY-NC](https://img.shields.io/badge/License-CC_BY--NC-lightgrey.svg)](./LICENSE)
+<a href='https://huggingface.co/collections/facebook/layerskip-666b25c50c8ae90e1965727a'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-blue'></a> [![License: CC BY-NC](https://img.shields.io/badge/License-CC_BY--NC-lightgrey.svg)](./LICENSE) [![YouTube](https://badges.aleen42.com/src/youtube.svg)](https://www.youtube.com/watch?v=oPxdfVVmLP8) [![arXiv](https://img.shields.io/badge/arXiv-2404.16710-b31b1b.svg)](https://arxiv.org/abs/2404.16710) [![alphaXiv](https://img.shields.io/badge/alphaXiv-2404.16710-9a2037.svg)](https://www.alphaxiv.org/abs/2404.16710)
 
-This code base is the implementation of team YYDL (CS7643, Fall 2024, Master of Science in Computer Science, Georgia Institute of Technology) based on https://github.com/facebookresearch/LayerSkip ([LayerSkip: Enabling Early Exit Inference and Self-Speculative Decoding](https://arxiv.org/abs/2404.16710)).
+This code base is the implementation of [LayerSkip: Enabling Early Exit Inference and Self-Speculative Decoding](https://arxiv.org/abs/2404.16710).
 
 <div align="center">
   <img src="https://github.com/user-attachments/assets/1fdd91d9-37ea-4b42-b5be-579fb5e1f2f2" width="500">
 </div>
 
+## News
+- [2024/11] 🤗 LayerSkip has been integrated into [Hugging Face `transformers`](https://huggingface.co/blog/layerskip).
 
-# ------------ Usage Guidance from the LayerSkip Github ------------
 ## Getting Started
 - Clone repo:
 ```console
@@ -59,16 +60,6 @@ $ torchrun generate.py --model facebook/layerskip-llama2-7B \
     --max_steps 512 \
     --generation_strategy self_speculative \
     --exit_layer 8 \
-    --num_speculations 6
-```
-
-In order to observe dynanmic early exit, you need to use dynamic_early_exit decoding to generate tokens, and specify `--confidence_threshold`, the layer the draft stage to exit at, and `--num_speculations`, the number of draft tokens, or use entropy_exit decoding to generate tokens, and specify `--entropy_threshold`, and `--num_speculations`:
-```console
-$ torchrun generate.py --model facebook/layerskip-llama2-7B \
-    --sample True \
-    --max_steps 512 \
-    --generation_strategy dynamic_early_exit \
-    --confidence_threshold 0.2 \
     --num_speculations 6
 ```
 
@@ -165,11 +156,34 @@ $ torchrun correctness.py --model facebook/layerskip-llama2-7B \
 
 Kindy check [DOCKER.md](DOCKER.md) to setup the project using docker
 
+## Other Implementations
+We also have other implementations of LayerSkip inference:
+- [gpt-fast](https://github.com/pytorch-labs/gpt-fast/tree/LayerSkip?tab=readme-ov-file#self-speculative-sampling): gpt-fast is a simple and efficient pytorch-native transformer text generation. We have implemented LayerSkip in the gpt-fast codebase to enable compouding it with other optimizations such as `torch.compile()`, quantization, and tensor parallelism.
+- [Native HuggingFace](https://huggingface.co/facebook/layerskip-llama2-7B#huggingface): in the model card of each of our HuggingFace models, we have provided simple code snippets that leverages HuggingFace speculative decoding capabilities using a simple trick to clone the earlier layers of the main model without cloning its weights. Although this implementation is simple and does not require implementing other functions or importing other libraries, it does not share the KV cache or execution between the draft and verification stages.
+
+## Training
+Our training implementation is work-in-progress. You can check this [pull request](https://github.com/pytorch/torchtune/pull/1076) for details and discussions.
 
 ## License
 LayerSkip is licensed under CC-by-NC license. Refer to the LICENSE file in the top level directory.
 
 ## Contributing
-Team YYDL (Feifan Gu fgu36@gatech.edu, Mingze Li mli458@gatech.edu, Shengjie Qian sqian62@gatech.edu, Yiwen Zhou yzhou607@gatech.edu)
+We welcome contributions to LayerSkip. If you are interested in contributing please see [this document](./CONTRIBUTING.md).
 
+## Citation
+If you use LayerSkip in your research, please use the following BibTex entry:
+
+```bibtex
+@misc{layerskip,
+    title={LayerSkip: Enabling Early Exit Inference and Self-Speculative Decoding},
+    author={Mostafa Elhoushi and Akshat Shrivastava and Diana Liskovich and Basil Hosmer and Bram Wasti and Liangzhen Lai and Anas Mahmoud and Bilge Acun and Saurabh Agarwal and Ahmed Roman and Ahmed A Aly and Beidi Chen and Carole-Jean Wu},
+    booktitle = "Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)",
+    month = aug,
+    year = "2024",
+    address = "Bangkok, Thailand",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2024.acl-long.681",
+    doi = "10.18653/v1/2024.acl-long.681",
+    pages = "12622--12642",
+}
 ```

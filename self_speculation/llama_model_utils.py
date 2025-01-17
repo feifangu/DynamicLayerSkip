@@ -462,18 +462,31 @@ def optimized_forward_early(
         )
 
         if idx >= min_layer and idx % 3 == 0:
-            current_hidden = model.model.norm(hidden_states)
-            current_logits = model.lm_head(current_hidden)
 
-            probs = torch.softmax(current_logits[:, -1], dim=-1)
-            entropy = -(probs * torch.log(probs)).sum()
+           current_hidden = model.model.norm(hidden_states)
+           current_logits = model.lm_head(current_hidden)
 
-            # Adjust threshold since we're looking at fewer tokens
-            #print(f"KL_divergence_threshold = {KL_divergence_threshold}")
-            if entropy <= KL_divergence_threshold:
-                #print(f"Condition met: {confidence} >= {KL_divergence_threshold}")
+
+           if prev_logits is not None:
+            # Compute Top-K probabilities directly instead of full softmax
+            k = 15  # Adjust for better stability vs speed tradeoff
+            current_top_values, current_top_indices = torch.topk(current_logits[:, -1], k, dim=-1)
+            last_top_values, last_top_indices = torch.topk(prev_logits[:, -1], k, dim=-1)
+
+            # Only compute softmax on top-k tokens
+            current_probs_topk = torch.softmax(current_top_values, dim=-1)
+            last_probs_topk = torch.softmax(last_top_values, dim=-1)
+
+            # Compute probability difference over only top-K
+            prob_diff = torch.abs(current_probs_topk - last_probs_topk).mean()
+
+            #print(f"\nLayer {idx + 1}: Prob diff (top-k) = {prob_diff:.6f}")
+
+            if prob_diff < KL_divergence_threshold:
+                #print(f"Condition met: {prob_diff} < {KL_divergence_threshold}")
                 exit_layer = idx + 1
                 break
+           prev_logits = current_logits
   
 
     past_key_values = past_key_values.to_legacy_cache()

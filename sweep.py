@@ -19,7 +19,7 @@ from benchmark import benchmark, load_model_and_tokenizer, process_cli_arguments
 from self_speculation.generator_base import (
     GenerationConfig,
 )
-from self_speculation.entropy_based_generator import EntropyExitGenerationStrategy
+
 def sweep(args: Arguments, benchmark_arguments: BenchmarkArguments, generation_config: GenerationConfig, output_fname: str):
     results: List[Dict] = []
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -78,40 +78,6 @@ def sweep(args: Arguments, benchmark_arguments: BenchmarkArguments, generation_c
                 print(f"confidence_threshold: {confidence_threshold}, num_speculations: {num_speculations}, "
                       f"avg_exit_layer: {metric_result['avg_exit_layer']['mean']}, "
                       f"time_per_token: {metric_result['time_per_token']['mean']}")
-                
-
-    elif generation_config.generation_strategy == "entropy_exit":
-        # Sweep confidence threshold and num_speculations
-        for entropy_threshold in np.arange(4, 8, 0.1):  
-            for num_speculations in range(7, 13, 2):
-                generation_config.entropy_threshold = entropy_threshold
-                generation_config.num_speculations = num_speculations
-
-                metric_result = benchmark(model, tokenizer, benchmark_arguments, generation_config, args.seed)
-
-                # print("\nFull metric_result:")
-                # print(metric_result)
-
-                # Get average exit layer from results
-                # avg_exit_layer = sum(metric_result.get('exit_layers', [])) / len(metric_result.get('exit_layers', [1]))
-
-                results.append({
-                    "strategy": "dynamic_early_exit",
-                    "entropy_threshold": entropy_threshold,
-                    "num_speculations": num_speculations,
-                    "acceptance_rate": metric_result['acceptance_rate']['mean'],
-                    "total_time": metric_result['total_time']['mean'],
-                    "time_per_token": metric_result['time_per_token']['mean'],
-                    "tokens_per_second": metric_result['tokens_per_second']['mean'],
-                    "avg_exit_layer": metric_result['avg_exit_layer']['mean'],
-                    # "avg_exit_layer": avg_exit_layer
-                })
-                df = pd.DataFrame(results)
-                df.to_csv(output_fname, index=False)
-                print(f"entropy_threshold: {entropy_threshold}, num_speculations: {num_speculations}, "
-                      f"avg_exit_layer: {metric_result['avg_exit_layer']['mean']}, "
-                      f"time_per_token: {metric_result['time_per_token']['mean']}")
-
 
     # Print summary table
     print("\n")

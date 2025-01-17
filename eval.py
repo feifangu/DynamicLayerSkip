@@ -1,16 +1,10 @@
+
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
-
-import datetime
-import json
-import os
-import random
-from dataclasses import dataclass
-import logging
 
 from dataclasses import asdict, dataclass
 from typing import Any, List, Optional, Tuple, Union
@@ -438,32 +432,6 @@ def main(args: Arguments, eval_arguments: EvalArguments, generation_config: Gene
     print(results["results"])
     wrap.metric_result.pop("predicted_text")
     print(wrap.metric_result)
-
-
-    # ============ add log section ============
-
-    # output path
-    os.makedirs(args.output_dir, exist_ok=True)
-    # output file
-    output_fname = os.path.join(
-        args.output_dir, f"eval_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    )
-
-    # metrics to be recorded
-    log_data = {
-        "model_args": args.__dict__,
-        "eval_arguments": asdict(eval_arguments),
-        "generation_config": asdict(generation_config),
-        "results": results["results"],
-        "metric_result": wrap.metric_result,
-    }
-
-    # write in JSON file
-    with open(output_fname, "w") as f:
-        json.dump(log_data, f, indent=2)
-
-    print(f"Results and configurations have been saved to {output_fname}")
-
 
 def process_cli_arguments() -> Tuple[Arguments, EvalArguments, GenerationConfig]:
     parser = transformers.HfArgumentParser((Arguments, EvalArguments, GenerationConfig))

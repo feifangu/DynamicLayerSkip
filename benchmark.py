@@ -39,7 +39,7 @@ from self_speculation.generator_base import (
 
 from self_speculation.self_speculation_generator import SelfSpeculativeGenerationStrategy
 from self_speculation.dynamic_early_exit_generator import DynamicEarlyExitGenerationStrategy
-from self_speculation.entropy_based_generator import EntropyExitGenerationStrategy
+
 log = logging.getLogger(__name__)
 
 @dataclass
@@ -90,12 +90,6 @@ class EvaluationMetrics:
 
         for metric in self.tokens_per_second.values():
             metric.update(torch.tensor(generation_result.tokens_per_second))
-        
-        # Add exit layer update
-        for metric in self.avg_exit_layer.values():
-            if generation_result.generation_strategy_result.exit_layers:
-                avg = sum(generation_result.generation_strategy_result.exit_layers) / len(generation_result.generation_strategy_result.exit_layers)
-                metric.update(torch.tensor(avg))
 
         # Add exit layer update
         for metric in self.avg_exit_layer.values():
@@ -181,8 +175,6 @@ def benchmark(
         generation_strategy: GenerationStrategy = SelfSpeculativeGenerationStrategy()
     elif generation_config.generation_strategy == "dynamic_early_exit":
         generation_strategy: GenerationStrategy = DynamicEarlyExitGenerationStrategy()
-    elif generation_config.generation_strategy == "entropy_exit":  # Add this
-        generation_strategy: GenerationStrategy = EntropyExitGenerationStrategy()
     else:
         raise Exception(
             f"Unsupported generation strategy: {generation_config.generation_strategy}"
