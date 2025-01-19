@@ -67,8 +67,9 @@ class  DynamicEarlyExitGenerationStrategy(GenerationStrategy):
                     generation_config.max_steps - len(output_ids) - 1,
                 ),
                 past_key_values=past_key_values,
-                KL_divergence_threshold=generation_config.KL_divergence_threshold,
+                threshold=generation_config.threshold,
                 min_layer=generation_config.min_layer,
+                dynamic_method=generation_config.dynamic_method,
                 eos_token_id=eos_token_id,
                 calls=calls,
                 sample=generation_config.sample,
@@ -112,8 +113,9 @@ class  DynamicEarlyExitGenerationStrategy(GenerationStrategy):
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]],
         eos_token_id: int,
         calls: int,
-        KL_divergence_threshold: float,
+        threshold: float,
         min_layer: int,
+        dynamic_method: str,
         sample: Optional[bool] = False,
         temperature: Optional[float] = 0.7,
         top_k: Optional[int] = 50,
@@ -134,9 +136,10 @@ class  DynamicEarlyExitGenerationStrategy(GenerationStrategy):
                 model,
                 draft_input_ids,
                 past_key_values,
-                KL_divergence_threshold,
+                threshold,
                 exit_query_cache,
                 min_layer,
+                dynamic_method,
             )
             past_key_values = draft_result.past_key_values # TODO: change to a dict
             exit_query_cache = draft_result.exit_query_cache

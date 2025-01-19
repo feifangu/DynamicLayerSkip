@@ -35,7 +35,8 @@ class GenerationResult:
 class GenerationConfig:
     max_steps: int = 512
     exit_layer: int = -1
-    KL_divergence_threshold: float = 0.0
+    threshold: float = 0.0
+    dynamic_method: str = "prob_diff"
     min_layer: int = -1
     num_speculations: int = -1
     generation_strategy: str = "autoregressive"

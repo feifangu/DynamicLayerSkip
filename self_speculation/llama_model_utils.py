@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple, Dict
 
 import torch
 import transformers
+import math
 
 @dataclass
 class GenerationState:
@@ -411,9 +412,10 @@ def optimized_forward_early(
     model: transformers.LlamaForCausalLM,
     input_ids: torch.Tensor,
     past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]],
-    KL_divergence_threshold: float,
+    threshold: float,
     exit_query_cache: Optional[List[torch.Tensor]],
     min_layer: int,
+    dynamic_method: str,
 ) -> ForwardResult:
     device = input_ids.device
     batch_size, seq_length = input_ids.shape
@@ -449,6 +451,8 @@ def optimized_forward_early(
     hidden_states = inputs_embeds
     prev_logits = None
     exit_layer = len(model.model.layers)-1  # Default to last layer
+
+    check_interval = max(1, math.floor(len(model.model.layers) / 5))
     
     for idx, decoder_layer in enumerate(model.model.layers[:-1]):
         hidden_states, past_key_values = decoder_layer(
@@ -461,32 +465,43 @@ def optimized_forward_early(
             padding_mask=None,
         )
 
-        if idx >= min_layer and idx % 3 == 0:
+        if idx >= min_layer and idx % check_interval == 0:
 
-           current_hidden = model.model.norm(hidden_states)
-           current_logits = model.lm_head(current_hidden)
+            current_hidden = model.model.norm(hidden_states)
+            current_logits = model.lm_head(current_hidden)
 
 
-           if prev_logits is not None:
-            # Compute Top-K probabilities directly instead of full softmax
-            k = 15  # Adjust for better stability vs speed tradeoff
-            current_top_values, current_top_indices = torch.topk(current_logits[:, -1], k, dim=-1)
-            last_top_values, last_top_indices = torch.topk(prev_logits[:, -1], k, dim=-1)
+            if dynamic_method == "prob_diff":
+                if prev_logits is not None:
+                    k = 15  # Top-K for probability difference
+                    current_top_values, _ = torch.topk(current_logits[:, -1], k, dim=-1)
+                    last_top_values, _ = torch.topk(prev_logits[:, -1], k, dim=-1)
 
-            # Only compute softmax on top-k tokens
-            current_probs_topk = torch.softmax(current_top_values, dim=-1)
-            last_probs_topk = torch.softmax(last_top_values, dim=-1)
+                    current_probs_topk = torch.softmax(current_top_values, dim=-1)
+                    last_probs_topk = torch.softmax(last_top_values, dim=-1)
 
-            # Compute probability difference over only top-K
-            prob_diff = torch.abs(current_probs_topk - last_probs_topk).mean()
+                    prob_diff = torch.abs(current_probs_topk - last_probs_topk).mean()
 
-            #print(f"\nLayer {idx + 1}: Prob diff (top-k) = {prob_diff:.6f}")
+                    if prob_diff < threshold:
+                        exit_layer = idx + 1
+                        break
+                prev_logits = current_logits  # Update previous logits
 
-            if prob_diff < KL_divergence_threshold:
-                #print(f"Condition met: {prob_diff} < {KL_divergence_threshold}")
-                exit_layer = idx + 1
-                break
-           prev_logits = current_logits
+            elif dynamic_method == "max_prob":
+                current_probs = torch.softmax(current_logits[:, -1], dim=-1)
+                confidence = torch.max(current_probs)  # Get max probability
+
+                if confidence > threshold:
+                    exit_layer = idx + 1
+                    break
+
+            elif dynamic_method == "prob_entropy":
+                probs = torch.softmax(current_logits[:, -1], dim=-1)
+                entropy = -(probs * torch.log(probs)).sum()  # Compute entropy
+
+                if entropy <  threshold:
+                    exit_layer = idx + 1
+                    break
   
 
     past_key_values = past_key_values.to_legacy_cache()
