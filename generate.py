@@ -28,7 +28,8 @@ from self_speculation.generator_base import (
 )
 from self_speculation.self_speculation_generator import SelfSpeculativeGenerationStrategy
 from self_speculation.speculative_streamer import SpeculativeTextStreamer
-from self_speculation.dynamic_early_exit_generator import DynamicEarlyExitGenerationStrategy
+from self_speculation.dynamic_early_exit_max_generator import DynamicEarlyExitMaxGenerationStrategy
+from self_speculation.dynamic_early_exit_first_generator import DynamicEarlyExitFirstGenerationStrategy
 
 class StreamerType(str, Enum):
     NONE="none"
@@ -88,8 +89,10 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
         generation_strategy: GenerationStrategy = AutoRegressiveGenerationStrategy()
     elif generation_config.generation_strategy == "self_speculative":
         generation_strategy: GenerationStrategy = SelfSpeculativeGenerationStrategy()
-    elif generation_config.generation_strategy == "dynamic_early_exit":
-        generation_strategy: GenerationStrategy = DynamicEarlyExitGenerationStrategy()
+    elif generation_config.generation_strategy == "dynamic_early_exit_first":
+        generation_strategy: GenerationStrategy = DynamicEarlyExitFirstGenerationStrategy()
+    elif generation_config.generation_strategy == "dynamic_early_exit_max":
+        generation_strategy: GenerationStrategy = DynamicEarlyExitMaxGenerationStrategy()
     else:
         raise Exception(
             f"Unsupported generation strategy: {generation_config.generation_strategy}"
@@ -114,7 +117,7 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
         print()
 
         print(colorama.Fore.BLUE, end="")
-        prompt=input("Enter your prompt: ")
+        prompt=sys.stdin.read()
         print(colorama.Style.RESET_ALL, end=" ")
 
         try:
