@@ -38,8 +38,8 @@ from self_speculation.generator_base import (
 )
 
 from self_speculation.self_speculation_generator import SelfSpeculativeGenerationStrategy
-from self_speculation.dynamic_early_exit_generator import DynamicEarlyExitFirstGenerationStrategy
-from self_speculation.dynamic_early_exit_generator import DynamicEarlyExitMaxGenerationStrategy
+from self_speculation.dynamic_early_exit_first_generator import DynamicEarlyExitFirstGenerationStrategy
+from self_speculation.dynamic_early_exit_max_generator import DynamicEarlyExitMaxGenerationStrategy
 
 log = logging.getLogger(__name__)
 
