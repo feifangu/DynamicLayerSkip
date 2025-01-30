@@ -167,7 +167,7 @@ def plot_contour(df, generation_strategy: str, pdf_fname):
     ## Prepare grid coordinates (assuming exit_layer and num_speculations are integer indices)
     if generation_strategy == "self_speculative":
         x_column = "exit_layer"
-    elif generation_strategy == "dynamic_early_exit":
+    elif generation_strategy in ("dynamic_early_exit_max", "dynamic_early_exit_first"):
         x_column = "average_exit_layer"
     grid_x, grid_y = np.mgrid[
         df[x_column].min() : df[x_column].max() : 100j,
