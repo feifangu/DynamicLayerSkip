@@ -136,7 +136,7 @@ class  DynamicEarlyExitFirstGenerationStrategy(GenerationStrategy):
                     min_layer,
                     dynamic_method,
                 )
-            first_exit_layer = draft_result.exit_layer
+                first_exit_layer = draft_result.exit_layer
             else:
                 draft_result = forward_early(
                     model,
