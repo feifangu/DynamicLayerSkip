@@ -22,7 +22,7 @@ def max_fn(x, eps=1e-6):
     x_max = torch.where(x > 0, x, 0)
     return x_max / (torch.sum(x_max) + eps)
 
-class  DynamicEarlyExitGenerationStrategy(GenerationStrategy):
+class  DynamicEarlyExitFirstGenerationStrategy(GenerationStrategy):
     def generate_token_ids(
         self,
         model: transformers.LlamaForCausalLM,
