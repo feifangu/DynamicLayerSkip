@@ -223,6 +223,3 @@ if __name__ == "__main__":
         process_cli_arguments()
     )
     sweep(args, benchmark_arguments, generation_config, sweep_arguments)
-    args, benchmark_arguments, generation_config = process_cli_arguments()
-    os.makedirs(args.output_dir, exist_ok=True)
-    sweep(args, benchmark_arguments, generation_config, f"{args.output_dir}/sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
