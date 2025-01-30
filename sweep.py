@@ -102,7 +102,7 @@ def sweep(
                 print(
                     f"exit_layer: {exit_layer}, num_speculations: {num_speculations}, time_per_token: {metric_result['time_per_token']['mean']}"
                 )
-    elif generation_config.generation_strategy == "dynamic_early_exit":
+    elif generation_config.generation_strategy in ("dynamic_early_exit_first", "dynamic_early_exit_max"):
         for min_layer in range(
             sweep_arguments.min_layer_first,
             sweep_arguments.min_layer_last + 1,
