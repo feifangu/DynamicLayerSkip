@@ -7,6 +7,8 @@
 
 from typing import List, Optional
 
+import pandas as pd
+
 import torch
 
 import transformers
@@ -15,11 +17,7 @@ from self_speculation.generator_base import (
     GenerationStrategy,
     GenerationStrategyResult,
 )
-from self_speculation.llama_model_utils import (
-    decode_next_token,
-    forward,
-    forward_early,
-)
+from self_speculation.llama_model_utils import decode_next_token, forward, forward_early
 
 
 class AutoRegressiveGenerationStrategy(GenerationStrategy):
@@ -29,9 +27,12 @@ class AutoRegressiveGenerationStrategy(GenerationStrategy):
         input_ids: List[int],
         eos_token_id: int,
         generation_config: GenerationConfig,
-        logits_processors: Optional[transformers.generation.logits_process.LogitsProcessorList] = None,
+        logits_processors: Optional[
+            transformers.generation.logits_process.LogitsProcessorList
+        ] = None,
         stopping_criteria: Optional[transformers.StoppingCriteriaList] = None,
         streamer: Optional[transformers.TextStreamer] = None,
+        save_path: str = "output.xlsx",
     ) -> GenerationStrategyResult:
         """Variant of `generate` with inputs/outputs formatted as token_ids."""
         past_key_values = None
@@ -40,7 +41,10 @@ class AutoRegressiveGenerationStrategy(GenerationStrategy):
         output_ids: List[int] = []
 
         exit_query_cache = None
-        for _ in range(generation_config.max_steps):
+
+        all_layer_max_probs = [] if generation_config.analysis else None
+
+        for step in range(generation_config.max_steps):
             if generation_config.exit_layer > 0:
                 model_output = forward_early(
                     model,
@@ -54,12 +58,28 @@ class AutoRegressiveGenerationStrategy(GenerationStrategy):
                     model,
                     input_ids,
                     past_key_values,
+                    analysis=generation_config.analysis,
                 )
+
             logits = model_output.logits
             if logits_processors:
                 logits = logits_processors(input_ids, logits)
             past_key_values = model_output.past_key_values
-            next_token, _ = decode_next_token(logits=logits, token_idx=-1, sample=generation_config.sample, temperature=generation_config.temperature, top_k=generation_config.top_k, top_p=generation_config.top_p)
+
+            # If in analysis mode, collect the list of layer-wise max probabilities
+            if generation_config.analysis and model_output.layer_max_probs is not None:
+                # model_output.layer_max_probs has length = number_of_layers
+                # We'll store it for this decoding step
+                all_layer_max_probs.append(model_output.layer_max_probs)
+
+            next_token, _ = decode_next_token(
+                logits=logits,
+                token_idx=-1,
+                sample=generation_config.sample,
+                temperature=generation_config.temperature,
+                top_k=generation_config.top_k,
+                top_p=generation_config.top_p,
+            )
             if streamer:
                 streamer.put(next_token)
             next_token = next_token.item()
@@ -77,4 +97,5 @@ class AutoRegressiveGenerationStrategy(GenerationStrategy):
         return GenerationStrategyResult(
             predicted_tokens=output_ids,
             acceptance_rate=None,
+            analysis_data=all_layer_max_probs if generation_config.analysis else None,
         )

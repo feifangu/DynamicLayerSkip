@@ -5,40 +5,50 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from typing import Tuple
-from enum import Enum
-from dataclasses import dataclass
-
-import colorama
 import datetime
+import os
 import random
 import sys
-import torch
 import traceback
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Tuple
+
+import colorama
+import torch
 import transformers
-import os
+import xlsxwriter
 
 from arguments import Arguments, simple_parse_args_string
 from self_speculation.autoregressive_generator import AutoRegressiveGenerationStrategy
+from self_speculation.dynamic_early_exit_first_generator import (
+    DynamicEarlyExitFirstGenerationStrategy,
+)
+from self_speculation.dynamic_early_exit_max_generator import (
+    DynamicEarlyExitMaxGenerationStrategy,
+)
 from self_speculation.generator_base import (
     GenerationConfig,
     GenerationResult,
     GenerationStrategy,
     HuggingfaceLlamaGenerator,
 )
-from self_speculation.self_speculation_generator import SelfSpeculativeGenerationStrategy
+from self_speculation.self_speculation_generator import (
+    SelfSpeculativeGenerationStrategy,
+)
 from self_speculation.speculative_streamer import SpeculativeTextStreamer
-from self_speculation.dynamic_early_exit_max_generator import DynamicEarlyExitMaxGenerationStrategy
-from self_speculation.dynamic_early_exit_first_generator import DynamicEarlyExitFirstGenerationStrategy
+
 
 class StreamerType(str, Enum):
-    NONE="none"
-    STANDARD="standard"
-    SPECULATIVE="speculative"
+    NONE = "none"
+    STANDARD = "standard"
+    SPECULATIVE = "speculative"
+
 
 @dataclass
 class GenerateArguments:
     streamer: StreamerType = StreamerType.STANDARD
+
 
 def setup(args: Arguments, device: str = "cuda"):
     backend_str = "cpu:gloo" if "cpu" in device else "cuda:nccl,cpu:gloo"
@@ -52,6 +62,7 @@ def setup(args: Arguments, device: str = "cuda"):
     if rank != 0:
         # only run on rank 0, we don't support parallel inference yet
         exit()
+
 
 def load_model_and_tokenizer(args: Arguments, device: str = "auto"):
     local_model_path: str = args.model
@@ -68,7 +79,39 @@ def load_model_and_tokenizer(args: Arguments, device: str = "auto"):
 
     return model, tokenizer
 
-def main(args: Arguments, generate_arguments: GenerateArguments, generation_config: GenerationConfig):
+
+def save_analysis_to_excel(filename: str, all_layer_max_probs: List[List[float]]):
+    """
+    all_layer_max_probs is shape [T, num_layers]
+    We want to output a spreadsheet with shape (num_layers, T),
+    i.e. each row is a layer, each column is a generation step.
+    """
+    if not all_layer_max_probs:
+        return
+
+    # Transpose from [T, L] -> [L, T]
+    # T = number of steps, L = number of layers
+    steps = len(all_layer_max_probs)
+    num_layers = len(all_layer_max_probs[0]) if steps > 0 else 0
+
+    # Prepare data in row-major (row=layer, col=step)
+    data_transposed = list(zip(*all_layer_max_probs))  # shape: [num_layers][step]
+
+    workbook = xlsxwriter.Workbook(filename)
+    worksheet = workbook.add_worksheet()
+
+    for layer_idx in range(num_layers):
+        for step_idx in range(steps):
+            worksheet.write(layer_idx, step_idx, data_transposed[layer_idx][step_idx])
+
+    workbook.close()
+
+
+def main(
+    args: Arguments,
+    generate_arguments: GenerateArguments,
+    generation_config: GenerationConfig,
+):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     setup(args, device=device)
     transformers.utils.logging.set_verbosity_error()
@@ -90,9 +133,13 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
     elif generation_config.generation_strategy == "self_speculative":
         generation_strategy: GenerationStrategy = SelfSpeculativeGenerationStrategy()
     elif generation_config.generation_strategy == "dynamic_early_exit_first":
-        generation_strategy: GenerationStrategy = DynamicEarlyExitFirstGenerationStrategy()
+        generation_strategy: GenerationStrategy = (
+            DynamicEarlyExitFirstGenerationStrategy()
+        )
     elif generation_config.generation_strategy == "dynamic_early_exit_max":
-        generation_strategy: GenerationStrategy = DynamicEarlyExitMaxGenerationStrategy()
+        generation_strategy: GenerationStrategy = (
+            DynamicEarlyExitMaxGenerationStrategy()
+        )
     else:
         raise Exception(
             f"Unsupported generation strategy: {generation_config.generation_strategy}"
@@ -107,17 +154,20 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
     warmup = 1
     for _ in range(warmup):
         model.generation_config.pad_token_id = tokenizer.eos_token_id
-        model.generate(**tokenizer("This is a warmup prompt", return_tensors="pt").to(device), max_new_tokens=10)
+        model.generate(
+            **tokenizer("This is a warmup prompt", return_tensors="pt").to(device),
+            max_new_tokens=10,
+        )
 
     while True:
         print()
-        #print("Enter a prompt and then press ctrl+d twice for the model to complete:")
+        # print("Enter a prompt and then press ctrl+d twice for the model to complete:")
         print("Enter a prompt for the model to complete:")
         print("======================================================================")
         print()
 
         print(colorama.Fore.BLUE, end="")
-        prompt=sys.stdin.read()
+        prompt = sys.stdin.read()
         print(colorama.Style.RESET_ALL, end=" ")
 
         try:
@@ -144,16 +194,42 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
         print(f"\tNumber of tokens: {num_tokens}")
         print(f"\tTime per token: {total_time / num_tokens : .3f}s")
         print(f"\tTokens per second: {num_tokens / total_time :.3f}")
-        if generation_config.generation_strategy in ("self_speculative", "dynamic_early_exit"):
-            print(f"\tAcceptance Rate: {response.generation_strategy_result.acceptance_rate:.2%}")
-        if generation_config.generation_strategy == "dynamic_early_exit":
-            print("\nExit layers used:", response.generation_strategy_result.exit_layers)
+        if generation_config.generation_strategy in (
+            "self_speculative",
+            "dynamic_early_exit",
+        ):
             print(
-                f"Average exit layer: {sum(response.generation_strategy_result.exit_layers) / len(response.generation_strategy_result.exit_layers):.2f}")
+                f"\tAcceptance Rate: {response.generation_strategy_result.acceptance_rate:.2%}"
+            )
+        if generation_config.generation_strategy == "dynamic_early_exit":
+            print(
+                "\nExit layers used:", response.generation_strategy_result.exit_layers
+            )
+            print(
+                f"Average exit layer: {sum(response.generation_strategy_result.exit_layers) / len(response.generation_strategy_result.exit_layers):.2f}"
+            )
         print()
 
+        # --- Save analysis to Excel if requested ---
+        if (
+            generation_config.analysis
+            and generation_config.generation_strategy == "autoregressive"
+            and response.generation_strategy_result.analysis_data is not None
+        ):
+            excel_path = os.path.join(
+                args.output_dir,
+                f"generate_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            )
+            save_analysis_to_excel(
+                excel_path, response.generation_strategy_result.analysis_data
+            )
+            print(f"Analysis Excel saved to: {excel_path}")
+
+
 def process_cli_arguments() -> Tuple[Arguments, GenerateArguments, GenerationConfig]:
-    parser = transformers.HfArgumentParser((Arguments, GenerateArguments, GenerationConfig))
+    parser = transformers.HfArgumentParser(
+        (Arguments, GenerateArguments, GenerationConfig)
+    )
     (
         general_arguments,
         generate_arguments,
@@ -162,11 +238,14 @@ def process_cli_arguments() -> Tuple[Arguments, GenerateArguments, GenerationCon
     ) = parser.parse_args_into_dataclasses(return_remaining_strings=True)
 
     if general_arguments.model_args:
-        general_arguments.model_args = simple_parse_args_string(general_arguments.model_args)
+        general_arguments.model_args = simple_parse_args_string(
+            general_arguments.model_args
+        )
     else:
         general_arguments.model_args = {}
 
     return general_arguments, generate_arguments, generation_config
+
 
 if __name__ == "__main__":
     args, benchmark_arguments, generation_config = process_cli_arguments()

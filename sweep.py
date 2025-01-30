@@ -102,7 +102,10 @@ def sweep(
                 print(
                     f"exit_layer: {exit_layer}, num_speculations: {num_speculations}, time_per_token: {metric_result['time_per_token']['mean']}"
                 )
-    elif generation_config.generation_strategy in ("dynamic_early_exit_first", "dynamic_early_exit_max"):
+    elif generation_config.generation_strategy in (
+        "dynamic_early_exit_first",
+        "dynamic_early_exit_max",
+    ):
         for min_layer in range(
             sweep_arguments.min_layer_first,
             sweep_arguments.min_layer_last + 1,
@@ -167,7 +170,7 @@ def plot_contour(df, generation_strategy: str, pdf_fname):
     ## Prepare grid coordinates (assuming exit_layer and num_speculations are integer indices)
     if generation_strategy == "self_speculative":
         x_column = "exit_layer"
-    elif generation_strategy == "dynamic_early_exit":
+    elif generation_strategy in ("dynamic_early_exit_max", "dynamic_early_exit_first"):
         x_column = "average_exit_layer"
     grid_x, grid_y = np.mgrid[
         df[x_column].min() : df[x_column].max() : 100j,
@@ -223,6 +226,3 @@ if __name__ == "__main__":
         process_cli_arguments()
     )
     sweep(args, benchmark_arguments, generation_config, sweep_arguments)
-    args, benchmark_arguments, generation_config = process_cli_arguments()
-    os.makedirs(args.output_dir, exist_ok=True)
-    sweep(args, benchmark_arguments, generation_config, f"{args.output_dir}/sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
